@@ -1,10 +1,14 @@
 import 'dotenv/config';
+import express from 'express';
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// Prompt système (TON PROMPT)
+/* ====================
+   PROMPT SYSTÈME
+==================== */
+
 const SYSTEM_PROMPT = `
 
 ====================
@@ -113,53 +117,85 @@ Si fin : « Souhaitez-vous que je prévienne la réception ? »
 
 `;
 
-// Serveur HTTP
-const server = http.createServer();
+/* ====================
+   EXPRESS APP
+==================== */
+
+const app = express();
+
+/**
+ * Health check — CRITIQUE pour Railway
+ */
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
+
+/**
+ * Root (facultatif mais utile)
+ */
+app.get('/', (req, res) => {
+  res.send('Concierge Realtime Server running');
+});
+
+/* ====================
+   HTTP SERVER
+==================== */
+
+const server = http.createServer(app);
+
+/* ====================
+   WEBSOCKET SERVER
+==================== */
+
 const wss = new WebSocketServer({ server });
 
-wss.on('connection', async (clientSocket) => {
-  console.log('Client connecté');
+wss.on('connection', (clientSocket) => {
+  console.log('Client WebSocket connecté');
 
-  // Connexion Realtime OpenAI
   const openaiSocket = new WebSocket(
     'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
     {
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1'
-      }
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'realtime=v1',
+      },
     }
   );
 
   openaiSocket.on('open', () => {
     console.log('Connecté à OpenAI Realtime');
 
-    openaiSocket.send(JSON.stringify({
-      type: 'session.update',
-      session: {
-        instructions: SYSTEM_PROMPT,
-        voice: 'alloy',
-        output_audio_format: 'mp3',
-        input_audio_transcription: { enabled: true }
-      }
-    }));
+    openaiSocket.send(
+      JSON.stringify({
+        type: 'session.update',
+        session: {
+          instructions: SYSTEM_PROMPT,
+          voice: 'alloy',
+          output_audio_format: 'mp3',
+          input_audio_transcription: { enabled: true },
+        },
+      })
+    );
   });
 
-  // Relais OpenAI → client
   openaiSocket.on('message', (msg) => {
     clientSocket.send(msg.toString());
   });
 
-  // Relais client → OpenAI
   clientSocket.on('message', (msg) => {
     openaiSocket.send(msg.toString());
   });
 
   clientSocket.on('close', () => {
     openaiSocket.close();
+    console.log('Client WebSocket déconnecté');
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Serveur lancé sur http://localhost:${PORT}`);
+/* ====================
+   START SERVER
+==================== */
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server listening on port ${PORT}`);
 });

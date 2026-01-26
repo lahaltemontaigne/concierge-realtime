@@ -1,17 +1,13 @@
 {
-  "name": "concierge-realtime-local",
+  "name": "concierge-realtime",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "dotenv": "^17.2.3",
-    "node-fetch": "^3.3.2",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
     "ws": "^8.19.0"
   }
 }
