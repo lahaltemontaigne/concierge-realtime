@@ -138,7 +138,6 @@ Si incompréhension : « Je n’ai pas bien compris. Pourriez-vous répéter ? �
 Si fin : « Souhaitez-vous que je prévienne la réception ? »
 
 
-
 `;
 
 /* =========================
@@ -152,7 +151,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       throw new Error('Fichier audio manquant');
     }
 
-    /* === 1. TRANSCRIPTION === */
+    // 1️⃣ Transcription
     const form = new FormData();
     form.append(
       'file',
@@ -179,7 +178,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       throw new Error('Transcription vide');
     }
 
-    /* === 2. RÉPONSE TEXTE === */
+    // 2️⃣ Génération texte
     const chatRes = await fetch(
       'https://api.openai.com/v1/responses',
       {
@@ -200,10 +199,9 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
 
     const chat = await chatRes.json();
     const reply = chat.output[0].content[0].text;
-
     console.log('💬 Réponse:', reply);
 
-    /* === 3. TTS OPENAI === */
+    // 3️⃣ TTS OpenAI
     const ttsRes = await fetch(
       'https://api.openai.com/v1/audio/speech',
       {
