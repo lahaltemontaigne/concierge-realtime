@@ -1,14 +1,37 @@
 import 'dotenv/config';
 import express from 'express';
-import http from 'http';
-import WebSocket, { WebSocketServer } from 'ws';
+import multer from 'multer';
+import fetch from 'node-fetch';
 
+const app = express();
+const upload = multer();
 const PORT = process.env.PORT || 3000;
 
-/* ====================
-   PROMPT SYSTÈME
-==================== */
+/* =========================
+   CORS — OBLIGATOIRE
+========================= */
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', 'https://lahaltemontaigne.com');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+/* =========================
+   HEALTH CHECK
+========================= */
+app.get('/health', (req, res) => {
+  res.send('OK');
+});
+
+/* =========================
+   SYSTEM PROMPT
+========================= */
 const SYSTEM_PROMPT = `
 
 ====================
@@ -115,87 +138,103 @@ Si incompréhension : « Je n’ai pas bien compris. Pourriez-vous répéter ? �
 Si fin : « Souhaitez-vous que je prévienne la réception ? »
 
 
+
 `;
 
-/* ====================
-   EXPRESS APP
-==================== */
+/* =========================
+   TALK ENDPOINT
+========================= */
+app.post('/talk', upload.single('audio'), async (req, res) => {
+  try {
+    console.log('🎙️ Audio reçu');
 
-const app = express();
-
-/**
- * Health check — CRITIQUE pour Railway
- */
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-/**
- * Root (facultatif mais utile)
- */
-app.get('/', (req, res) => {
-  res.send('Concierge Realtime Server running');
-});
-
-/* ====================
-   HTTP SERVER
-==================== */
-
-const server = http.createServer(app);
-
-/* ====================
-   WEBSOCKET SERVER
-==================== */
-
-const wss = new WebSocketServer({ server });
-
-wss.on('connection', (clientSocket) => {
-  console.log('Client WebSocket connecté');
-
-  const openaiSocket = new WebSocket(
-    'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1',
-      },
+    if (!req.file) {
+      throw new Error('Fichier audio manquant');
     }
-  );
 
-  openaiSocket.on('open', () => {
-    console.log('Connecté à OpenAI Realtime');
-
-    openaiSocket.send(
-      JSON.stringify({
-        type: 'session.update',
-        session: {
-          instructions: SYSTEM_PROMPT,
-          voice: 'alloy',
-          output_audio_format: 'mp3',
-          input_audio_transcription: { enabled: true },
-        },
-      })
+    /* === 1. TRANSCRIPTION === */
+    const form = new FormData();
+    form.append(
+      'file',
+      new Blob([req.file.buffer]),
+      'audio.webm'
     );
-  });
+    form.append('model', 'gpt-4o-mini-transcribe');
 
-  openaiSocket.on('message', (msg) => {
-    clientSocket.send(msg.toString());
-  });
+    const transcriptRes = await fetch(
+      'https://api.openai.com/v1/audio/transcriptions',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: form
+      }
+    );
 
-  clientSocket.on('message', (msg) => {
-    openaiSocket.send(msg.toString());
-  });
+    const transcript = await transcriptRes.json();
+    console.log('📝 Transcription:', transcript);
 
-  clientSocket.on('close', () => {
-    openaiSocket.close();
-    console.log('Client WebSocket déconnecté');
-  });
+    if (!transcript.text) {
+      throw new Error('Transcription vide');
+    }
+
+    /* === 2. RÉPONSE TEXTE === */
+    const chatRes = await fetch(
+      'https://api.openai.com/v1/responses',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          input: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: transcript.text }
+          ]
+        })
+      }
+    );
+
+    const chat = await chatRes.json();
+    const reply = chat.output[0].content[0].text;
+
+    console.log('💬 Réponse:', reply);
+
+    /* === 3. TTS OPENAI === */
+    const ttsRes = await fetch(
+      'https://api.openai.com/v1/audio/speech',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini-tts',
+          voice: 'alloy',
+          input: reply
+        })
+      }
+    );
+
+    const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+    console.log('🔊 Audio envoyé');
+
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.send(audioBuffer);
+
+  } catch (err) {
+    console.error('❌ ERREUR TALK:', err);
+    res.status(500).send('Erreur serveur');
+  }
 });
 
-/* ====================
+/* =========================
    START SERVER
-==================== */
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server listening on port ${PORT}`);
+========================= */
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
