@@ -234,7 +234,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
         body: JSON.stringify({
           model: 'gpt-4o-mini-tts',
           voice: 'alloy',
-          input: finalReply`
+          input: finalReply
         })
       }
     );
