@@ -222,12 +222,6 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     /* =========================
        4️⃣ SYNTHÈSE VOCALE
     ========================= */
-    const VOICE_PROMPT = `
-Voix d’homme posée, chaleureuse et professionnelle, jamais monotone, familière ou théâtrale.
-Débit légèrement lent.
-Intonation naturelle et rassurante.
-Pauses légères entre les phrases.
-`;
 
     const ttsRes = await fetch(
       'https://api.openai.com/v1/audio/speech',
