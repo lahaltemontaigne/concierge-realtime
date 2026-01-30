@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import fetch from 'node-fetch';
+import FormData from 'form-data';
 
 const app = express();
 const upload = multer();
@@ -34,6 +35,7 @@ app.get('/health', (req, res) => {
 ========================= */
 const SYSTEM_PROMPT = `
 
+
 ====================
 TU ES
 ====================
@@ -65,6 +67,8 @@ RÈGLES ABSOLUES
 - Tu ne donnes jamais d’informations incertaines
 - Si on te demande si tu es une IA, tu dis exactement : « je suis le concierge de la maison »
 - Si tu n’as pas l’information, tu la cherches avec les outils à ta disposition, sinon tu dis exactement : « je n’ai pas cette information mais je peux prévenir la réception si vous le souhaitez »
+- Si on te demande d’appeler qui que ce soit, tu réponds que tu ne peux pas le faire mais que tu peux fournir le numéro de téléphone directement (ou bien prévenir la réception si besoin)
+- Si incompréhension : Tu réponds : « Je n’ai pas bien compris. Pourriez-vous répéter ? »
 
 ====================
 INFORMATIONS SUR L’HÔTEL
@@ -109,14 +113,14 @@ Réputation :
 QUESTIONS FRÉQUENTES (RÉFÉRENCES)
 ====================
 
-- Petit-déjeuner : « À partir de 7h dans la véranda, au rez-de-chaussée »
+- Petit-déjeuner : à partir de 7h dans la véranda
 - Tram : station située devant la gare, accessible à pied en quelques minutes par la rue Pelleport
 - Aéroport : taxi 25 min, navette 40 min, tram 1h
 - Annulation : aucun remboursement à compter de la veille de votre arrivée
 - Fumer : uniquement dans le jardin, où des cendriers sont à votre disposition
 - Plage : Arcachon (nombreuses plages, proche Dune du Pilat) ou Cap Ferret (nature, bars à huîtres, accès bassin et océan avec ses longues plages de sable fin) à 1h
 - Vignobles : visites guidées avec dégustation dans certains châteaux emblématiques (exemples : Château Coutet, Montlabert), visites incontournables à Saint-Émilion (l’Église Monolithique souterraine, le Cloître des Cordeliers, la Tour du Roy ou encore la Maison du Vin !)
-- Restaurants : La Brasserie Bordelaise (cuisine traditionnelle), La Tupina (réputée pour sa cuisine au feu de cheminées), Le Petit Commerce (pour les amateurs de fruits de mer), L’Entrecôte (véritable institution bordelaise, pour les amateurs de viande, sans réservation donc patience). 
+- Restaurants : La Brasserie Bordelaise (cuisine traditionnelle, tel : 05 57 87 11 91), La Tupina (réputée pour sa cuisine au feu de cheminées, tel : 05 56 91 56 37), Le Petit Commerce (pour les amateurs de fruits de mer, tel : 05 56 79 76 58), L’Entrecôte (véritable institution bordelaise, pour les amateurs de viande, sans réservation donc patience, tel : 05 56 81 76 10)
 - Musées : le Musée d'Aquitaine (qui décrit l’histoire de la région), le Musée des Beaux-Arts (pour les amateurs d’art européen), le CAPC (pour les amateurs d’art contemporain), la Cité du Vin (expérience immersive et interactive sur le vin)
 
 ====================
@@ -125,20 +129,54 @@ PROCÉDURES
 
 - Problème dans la chambre → proposer de prévenir la réception
 - Taxi → toujours demander à quel nom et pour quelle heure avant de confirmer
-- Question personnelle, insultante ou déplacée → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
-
-====================
-COMPORTEMENT VOCAL
-====================
-
-Phrase de démarrage : « Je vous écoute. »
-
-Si incompréhension : « Je n’ai pas bien compris. Pourriez-vous répéter ? »
-
-Si fin : « Souhaitez-vous que je prévienne la réception ? »
-
+- Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
 `;
+
+/* =========================
+   UTILITAIRES
+========================= */
+
+// Détection besoin internet
+function needsWebSearch(text) {
+  const keywords = [
+    'numéro',
+    'telephone',
+    'téléphone',
+    'horaires',
+    'adresse',
+    'site',
+    'réserver',
+    'reservation',
+    'réservation',
+    'appeler',
+    'contact'
+  ];
+  return keywords.some(k => text.toLowerCase().includes(k));
+}
+
+// Recherche Google via SerpAPI
+async function googleSearch(query) {
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERPAPI_KEY}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (!data || data.error) return null;
+
+  if (data.knowledge_graph) {
+    const kg = data.knowledge_graph;
+    return {
+      name: kg.title || 'Non trouvé',
+      phone: kg.phone || 'Non trouvé',
+      address: kg.address || 'Non trouvé',
+      website: kg.website || 'Non trouvé',
+      hours: kg.hours || 'Non trouvé'
+    };
+  }
+
+  return null;
+}
 
 /* =========================
    TALK ENDPOINT
@@ -148,16 +186,12 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     console.log('🎙️ Audio reçu');
 
     if (!req.file) {
-      throw new Error('Fichier audio manquant');
+      throw new Error('Audio manquant');
     }
 
-    // 1️⃣ Transcription
+    /* 1️⃣ TRANSCRIPTION */
     const form = new FormData();
-    form.append(
-      'file',
-      new Blob([req.file.buffer]),
-      'audio.webm'
-    );
+    form.append('file', req.file.buffer, 'audio.webm');
     form.append('model', 'gpt-4o-mini-transcribe');
 
     const transcriptRes = await fetch(
@@ -172,13 +206,39 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const transcript = await transcriptRes.json();
-    console.log('📝 Transcription:', transcript);
+    console.log('📝 Transcription:', transcript.text);
 
     if (!transcript.text) {
       throw new Error('Transcription vide');
     }
 
-    // 2️⃣ Génération texte
+    /* 2️⃣ ENRICH PROMPT AVEC INTERNET */
+    let enrichedPrompt = SYSTEM_PROMPT;
+
+    if (needsWebSearch(transcript.text)) {
+      console.log('🌐 Recherche Google déclenchée');
+      const webData = await googleSearch(transcript.text);
+
+      if (webData) {
+        enrichedPrompt += `
+====================
+INFORMATIONS INTERNET
+====================
+
+Nom : ${webData.name}
+Téléphone : ${webData.phone}
+Adresse : ${webData.address}
+Site : ${webData.website}
+Horaires : ${webData.hours}
+
+RÈGLE :
+- Tu utilises uniquement ces informations
+- Si "Non trouvé", tu refuses poliment
+`;
+      }
+    }
+
+    /* 3️⃣ OPENAI TEXTE */
     const chatRes = await fetch(
       'https://api.openai.com/v1/responses',
       {
@@ -190,7 +250,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           input: [
-            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'system', content: enrichedPrompt },
             { role: 'user', content: transcript.text }
           ]
         })
@@ -201,7 +261,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     const reply = chat.output[0].content[0].text;
     console.log('💬 Réponse:', reply);
 
-    // 3️⃣ TTS OpenAI
+    /* 4️⃣ TTS */
     const ttsRes = await fetch(
       'https://api.openai.com/v1/audio/speech',
       {
@@ -219,13 +279,11 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
-    console.log('🔊 Audio envoyé');
-
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
 
   } catch (err) {
-    console.error('❌ ERREUR TALK:', err);
+    console.error('❌ ERREUR:', err);
     res.status(500).send('Erreur serveur');
   }
 });
