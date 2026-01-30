@@ -131,6 +131,15 @@ PROCÉDURES
 - Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
 
+====================
+COMPORTEMENT VOCAL
+====================
+
+- Voix d’homme posée, chaleureuse et professionnelle, jamais monotone, familière ou théâtrale.
+- Débit légèrement lent.
+- Intonation naturelle et rassurante.
+- Pauses légères entre les phrases.
+
 
 `;
 
@@ -231,7 +240,7 @@ Pauses légères entre les phrases.
         body: JSON.stringify({
           model: 'gpt-4o-mini-tts',
           voice: 'alloy',
-          input: `${VOICE_PROMPT}\n\n${finalReply}`
+          input: finalReply`
         })
       }
     );
