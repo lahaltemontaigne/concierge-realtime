@@ -9,7 +9,7 @@ const upload = multer();
 const PORT = process.env.PORT || 3000;
 
 /* =========================
-   CORS — OBLIGATOIRE
+   CORS
 ========================= */
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', 'https://lahaltemontaigne.com');
@@ -61,14 +61,13 @@ RÈGLES ABSOLUES
 
 - Tu réponds uniquement aux questions liées à l’hôtel et au séjour
 - Réponses courtes : 1 à 3 phrases, jamais plus de 10 secondes à l’oral
-- Voix d’homme, posée, respectueuse, jamais familière
 - Tu ne fais jamais de blagues
 - Tu ne parles jamais de technologie ni d’intelligence artificielle
 - Tu ne donnes jamais d’informations incertaines
 - Si on te demande si tu es une IA, tu dis exactement : « je suis le concierge de la maison »
 - Si tu n’as pas l’information, tu la cherches avec les outils à ta disposition, sinon tu dis exactement : « je n’ai pas cette information mais je peux prévenir la réception si vous le souhaitez »
 - Si on te demande d’appeler qui que ce soit, tu réponds que tu ne peux pas le faire mais que tu peux fournir le numéro de téléphone directement (ou bien prévenir la réception si besoin)
-- Si incompréhension : Tu réponds : « Je n’ai pas bien compris. Pourriez-vous répéter ? »
+- Si incompréhension : « Je n’ai pas bien compris. Pourriez-vous répéter ? »
 
 ====================
 INFORMATIONS SUR L’HÔTEL
@@ -131,52 +130,9 @@ PROCÉDURES
 - Taxi → toujours demander à quel nom et pour quelle heure avant de confirmer
 - Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
+
+
 `;
-
-/* =========================
-   UTILITAIRES
-========================= */
-
-// Détection besoin internet
-function needsWebSearch(text) {
-  const keywords = [
-    'numéro',
-    'telephone',
-    'téléphone',
-    'horaires',
-    'adresse',
-    'site',
-    'réserver',
-    'reservation',
-    'réservation',
-    'appeler',
-    'contact'
-  ];
-  return keywords.some(k => text.toLowerCase().includes(k));
-}
-
-// Recherche Google via SerpAPI
-async function googleSearch(query) {
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERPAPI_KEY}`;
-
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (!data || data.error) return null;
-
-  if (data.knowledge_graph) {
-    const kg = data.knowledge_graph;
-    return {
-      name: kg.title || 'Non trouvé',
-      phone: kg.phone || 'Non trouvé',
-      address: kg.address || 'Non trouvé',
-      website: kg.website || 'Non trouvé',
-      hours: kg.hours || 'Non trouvé'
-    };
-  }
-
-  return null;
-}
 
 /* =========================
    TALK ENDPOINT
@@ -186,12 +142,17 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     console.log('🎙️ Audio reçu');
 
     if (!req.file) {
-      throw new Error('Audio manquant');
+      throw new Error('Fichier audio manquant');
     }
 
-    /* 1️⃣ TRANSCRIPTION */
+    /* =========================
+       1️⃣ TRANSCRIPTION
+    ========================= */
     const form = new FormData();
-    form.append('file', req.file.buffer, 'audio.webm');
+    form.append('file', req.file.buffer, {
+      filename: 'audio.webm',
+      contentType: 'audio/webm'
+    });
     form.append('model', 'gpt-4o-mini-transcribe');
 
     const transcriptRes = await fetch(
@@ -199,46 +160,23 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...form.getHeaders()
         },
         body: form
       }
     );
 
     const transcript = await transcriptRes.json();
-    console.log('📝 Transcription:', transcript.text);
+    console.log('📝 Transcription:', transcript);
 
     if (!transcript.text) {
       throw new Error('Transcription vide');
     }
 
-    /* 2️⃣ ENRICH PROMPT AVEC INTERNET */
-    let enrichedPrompt = SYSTEM_PROMPT;
-
-    if (needsWebSearch(transcript.text)) {
-      console.log('🌐 Recherche Google déclenchée');
-      const webData = await googleSearch(transcript.text);
-
-      if (webData) {
-        enrichedPrompt += `
-====================
-INFORMATIONS INTERNET
-====================
-
-Nom : ${webData.name}
-Téléphone : ${webData.phone}
-Adresse : ${webData.address}
-Site : ${webData.website}
-Horaires : ${webData.hours}
-
-RÈGLE :
-- Tu utilises uniquement ces informations
-- Si "Non trouvé", tu refuses poliment
-`;
-      }
-    }
-
-    /* 3️⃣ OPENAI TEXTE */
+    /* =========================
+       2️⃣ GÉNÉRATION TEXTE
+    ========================= */
     const chatRes = await fetch(
       'https://api.openai.com/v1/responses',
       {
@@ -250,7 +188,7 @@ RÈGLE :
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           input: [
-            { role: 'system', content: enrichedPrompt },
+            { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: transcript.text }
           ]
         })
@@ -258,10 +196,30 @@ RÈGLE :
     );
 
     const chat = await chatRes.json();
-    const reply = chat.output[0].content[0].text;
-    console.log('💬 Réponse:', reply);
+    const rawReply = chat.output[0].content[0].text;
+    console.log('💬 Réponse brute:', rawReply);
 
-    /* 4️⃣ TTS */
+    /* =========================
+       3️⃣ LISSAGE VOCAL
+    ========================= */
+    const spokenReply = rawReply
+      .replace(/\./g, '. ')
+      .replace(/,/g, ', ')
+      .replace(/\?/g, ' ? ')
+      .trim();
+
+    const finalReply = `Un instant. ${spokenReply}`;
+
+    /* =========================
+       4️⃣ SYNTHÈSE VOCALE
+    ========================= */
+    const VOICE_PROMPT = `
+Voix d’homme posée, chaleureuse et professionnelle, jamais monotone, familière ou théâtrale.
+Débit légèrement lent.
+Intonation naturelle et rassurante.
+Pauses légères entre les phrases.
+`;
+
     const ttsRes = await fetch(
       'https://api.openai.com/v1/audio/speech',
       {
@@ -273,17 +231,19 @@ RÈGLE :
         body: JSON.stringify({
           model: 'gpt-4o-mini-tts',
           voice: 'alloy',
-          input: reply
+          input: `${VOICE_PROMPT}\n\n${finalReply}`
         })
       }
     );
 
     const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+    console.log('🔊 Audio envoyé');
+
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
 
   } catch (err) {
-    console.error('❌ ERREUR:', err);
+    console.error('❌ ERREUR TALK:', err);
     res.status(500).send('Erreur serveur');
   }
 });
