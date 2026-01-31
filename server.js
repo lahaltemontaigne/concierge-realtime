@@ -15,14 +15,26 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', 'https://lahaltemontaigne.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
   next();
+});
+
+/* =========================
+   HEALTH CHECK
+========================= */
+app.get('/health', (req, res) => {
+  res.send('OK');
 });
 
 /* =========================
    SYSTEM PROMPT
 ========================= */
 const SYSTEM_PROMPT = `
+
 
 ====================
 TU ES
@@ -118,6 +130,7 @@ PROCÉDURES
 - Taxi → toujours demander à quel nom et pour quelle heure avant de confirmer
 - Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
+
 ====================
 COMPORTEMENT VOCAL
 ====================
@@ -131,62 +144,48 @@ COMPORTEMENT VOCAL
 `;
 
 /* =========================
-   GOOGLE SEARCH
-========================= */
-async function googleSearch(query) {
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-    query
-  )}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
-
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (!data.organic_results || data.organic_results.length === 0) {
-    return null;
-  }
-
-  return data.organic_results
-    .slice(0, 3)
-    .map(r => `- ${r.title} : ${r.snippet}`)
-    .join('\n');
-}
-
-/* =========================
-   TALK
+   TALK ENDPOINT
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    /* 🎙️ Transcription */
+    console.log('🎙️ Audio reçu');
+
+    if (!req.file) {
+      throw new Error('Fichier audio manquant');
+    }
+
+    /* =========================
+       1️⃣ TRANSCRIPTION
+    ========================= */
     const form = new FormData();
-    form.append('file', req.file.buffer, 'audio.webm');
+    form.append('file', req.file.buffer, {
+      filename: 'audio.webm',
+      contentType: 'audio/webm'
+    });
     form.append('model', 'gpt-4o-mini-transcribe');
 
     const transcriptRes = await fetch(
       'https://api.openai.com/v1/audio/transcriptions',
       {
         method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...form.getHeaders()
+        },
         body: form
       }
     );
 
     const transcript = await transcriptRes.json();
-    const userText = transcript.text;
+    console.log('📝 Transcription:', transcript);
 
-    /* 🔍 Détection besoin recherche */
-    const needsSearch =
-      /horaire|heures|ouvert|fermé|téléphone|numéro|adresse/i.test(userText);
-
-    let webContext = '';
-
-    if (needsSearch) {
-      const results = await googleSearch(userText);
-      if (results) {
-        webContext = `\nInformations trouvées sur internet :\n${results}`;
-      }
+    if (!transcript.text) {
+      throw new Error('Transcription vide');
     }
 
-    /* 💬 Génération réponse */
+    /* =========================
+       2️⃣ GÉNÉRATION TEXTE
+    ========================= */
     const chatRes = await fetch(
       'https://api.openai.com/v1/responses',
       {
@@ -198,17 +197,32 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           input: [
-            { role: 'system', content: SYSTEM_PROMPT + webContext },
-            { role: 'user', content: userText }
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: transcript.text }
           ]
         })
       }
     );
 
     const chat = await chatRes.json();
-    const reply = chat.output[0].content[0].text;
+    const rawReply = chat.output[0].content[0].text;
+    console.log('💬 Réponse brute:', rawReply);
 
-    /* 🔊 TTS */
+    /* =========================
+       3️⃣ LISSAGE VOCAL
+    ========================= */
+    const spokenReply = rawReply
+      .replace(/\./g, '. ')
+      .replace(/,/g, ', ')
+      .replace(/\?/g, ' ? ')
+      .trim();
+
+    const finalReply = `Un instant. ${spokenReply}`;
+
+    /* =========================
+       4️⃣ SYNTHÈSE VOCALE
+    ========================= */
+
     const ttsRes = await fetch(
       'https://api.openai.com/v1/audio/speech',
       {
@@ -220,24 +234,26 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
         body: JSON.stringify({
           model: 'gpt-4o-mini-tts',
           voice: 'alloy',
-          input: reply
+          input: finalReply
         })
       }
     );
 
     const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+    console.log('🔊 Audio envoyé');
+
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ ERREUR TALK:', err);
     res.status(500).send('Erreur serveur');
   }
 });
 
 /* =========================
-   START
+   START SERVER
 ========================= */
 app.listen(PORT, () => {
-  console.log(`✅ Server running on ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
