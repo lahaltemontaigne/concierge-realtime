@@ -15,26 +15,14 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', 'https://lahaltemontaigne.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
 /* =========================
-   HEALTH CHECK
-========================= */
-app.get('/health', (req, res) => {
-  res.send('OK');
-});
-
-/* =========================
-   SYSTEM PROMPT
+   SYSTEM PROMPT (INCHANGÉ)
 ========================= */
 const SYSTEM_PROMPT = `
-
 
 ====================
 TU ES
@@ -130,7 +118,6 @@ PROCÉDURES
 - Taxi → toujours demander à quel nom et pour quelle heure avant de confirmer
 - Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
-
 ====================
 COMPORTEMENT VOCAL
 ====================
@@ -141,27 +128,33 @@ COMPORTEMENT VOCAL
 - Pauses légères entre les phrases.
 
 
+
 `;
+
+/* =========================
+   SERPAPI SEARCH
+========================= */
+async function googleSearch(query) {
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (data.answer_box?.answer) return data.answer_box.answer;
+  if (data.answer_box?.snippet) return data.answer_box.snippet;
+  if (data.organic_results?.length)
+    return data.organic_results[0].snippet;
+
+  return null;
+}
 
 /* =========================
    TALK ENDPOINT
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    console.log('🎙️ Audio reçu');
-
-    if (!req.file) {
-      throw new Error('Fichier audio manquant');
-    }
-
-    /* =========================
-       1️⃣ TRANSCRIPTION
-    ========================= */
+    /* 1️⃣ TRANSCRIPTION */
     const form = new FormData();
-    form.append('file', req.file.buffer, {
-      filename: 'audio.webm',
-      contentType: 'audio/webm'
-    });
+    form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
 
     const transcriptRes = await fetch(
@@ -177,83 +170,71 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const transcript = await transcriptRes.json();
-    console.log('📝 Transcription:', transcript);
+    const userText = transcript.text;
 
-    if (!transcript.text) {
-      throw new Error('Transcription vide');
+    /* 2️⃣ PREMIÈRE RÉPONSE IA */
+    let messages = [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userText }
+    ];
+
+    let chatRes = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'gpt-4o-mini', input: messages })
+    });
+
+    let chat = await chatRes.json();
+    let reply = chat.output[0].content[0].text;
+
+    /* 3️⃣ SI INFO MANQUANTE → GOOGLE */
+    if (/je n’ai pas cette information/i.test(reply)) {
+      const googleInfo = await googleSearch(userText);
+      if (googleInfo) {
+        messages.push({
+          role: 'system',
+          content: `Information trouvée sur internet : ${googleInfo}`
+        });
+
+        chatRes = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ model: 'gpt-4o-mini', input: messages })
+        });
+
+        chat = await chatRes.json();
+        reply = chat.output[0].content[0].text;
+      }
     }
 
-    /* =========================
-       2️⃣ GÉNÉRATION TEXTE
-    ========================= */
-    const chatRes = await fetch(
-      'https://api.openai.com/v1/responses',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          input: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: transcript.text }
-          ]
-        })
-      }
-    );
-
-    const chat = await chatRes.json();
-    const rawReply = chat.output[0].content[0].text;
-    console.log('💬 Réponse brute:', rawReply);
-
-    /* =========================
-       3️⃣ LISSAGE VOCAL
-    ========================= */
-    const spokenReply = rawReply
-      .replace(/\./g, '. ')
-      .replace(/,/g, ', ')
-      .replace(/\?/g, ' ? ')
-      .trim();
-
-    const finalReply = `Un instant. ${spokenReply}`;
-
-    /* =========================
-       4️⃣ SYNTHÈSE VOCALE
-    ========================= */
-
-    const ttsRes = await fetch(
-      'https://api.openai.com/v1/audio/speech',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini-tts',
-          voice: 'alloy',
-          input: finalReply
-        })
-      }
-    );
+    /* 4️⃣ TTS */
+    const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini-tts',
+        voice: 'alloy',
+        input: reply
+      })
+    });
 
     const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
-    console.log('🔊 Audio envoyé');
-
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
 
-  } catch (err) {
-    console.error('❌ ERREUR TALK:', err);
+  } catch (e) {
+    console.error(e);
     res.status(500).send('Erreur serveur');
   }
 });
 
-/* =========================
-   START SERVER
-========================= */
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Server running on ${PORT}`));
