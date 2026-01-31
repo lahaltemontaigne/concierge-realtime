@@ -132,7 +132,7 @@ COMPORTEMENT VOCAL
 `;
 
 /* =========================
-   SERPAPI SEARCH
+   SERPAPI
 ========================= */
 async function googleSearch(query) {
   const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
@@ -141,18 +141,23 @@ async function googleSearch(query) {
 
   if (data.answer_box?.answer) return data.answer_box.answer;
   if (data.answer_box?.snippet) return data.answer_box.snippet;
-  if (data.organic_results?.length)
-    return data.organic_results[0].snippet;
+  if (data.organic_results?.length) return data.organic_results[0].snippet;
 
   return null;
 }
 
+function needsSearch(userText, reply) {
+  const keywords = /(horaires|ouvert|fermé|téléphone|numéro|réservation|adresse|prix|menu)/i;
+  const hasFacts = /\d/.test(reply);
+  return keywords.test(userText) && !hasFacts;
+}
+
 /* =========================
-   TALK ENDPOINT
+   TALK
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    /* 1️⃣ TRANSCRIPTION */
+    // 1️⃣ TRANSCRIPTION
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
@@ -172,7 +177,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     const transcript = await transcriptRes.json();
     const userText = transcript.text;
 
-    /* 2️⃣ PREMIÈRE RÉPONSE IA */
+    // 2️⃣ PREMIÈRE RÉPONSE
     let messages = [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
@@ -190,13 +195,13 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     let chat = await chatRes.json();
     let reply = chat.output[0].content[0].text;
 
-    /* 3️⃣ SI INFO MANQUANTE → GOOGLE */
-    if (/je n’ai pas cette information/i.test(reply)) {
-      const googleInfo = await googleSearch(userText);
-      if (googleInfo) {
+    // 3️⃣ RECHERCHE INTERNET SI NÉCESSAIRE
+    if (needsSearch(userText, reply)) {
+      const webInfo = await googleSearch(userText);
+      if (webInfo) {
         messages.push({
           role: 'system',
-          content: `Information trouvée sur internet : ${googleInfo}`
+          content: `Information fiable trouvée sur internet : ${webInfo}`
         });
 
         chatRes = await fetch('https://api.openai.com/v1/responses', {
@@ -213,7 +218,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       }
     }
 
-    /* 4️⃣ TTS */
+    // 4️⃣ TTS
     const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
