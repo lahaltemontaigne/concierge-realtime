@@ -163,7 +163,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
-    form.append('response_format', 'verbose_json');
+    form.append('response_format', 'json');
 
     const transcriptRes = await fetch(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -179,30 +179,26 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
 
     const transcript = await transcriptRes.json();
 
-    // 🔒 Reconstruction robuste du texte
-    let userText = transcript.text;
-    if (!userText && Array.isArray(transcript.segments)) {
-      userText = transcript.segments.map(s => s.text).join(' ').trim();
-    }
+    const userText = transcript.text?.trim();
 
     if (!userText) {
       console.error('❌ Transcription vide', transcript);
       return res.status(400).send('Audio non compris');
     }
 
-    const detectedLang = transcript.language || 'fr';
-
     console.log('🗣️ Texte:', userText);
-    console.log('🌍 Langue détectée:', detectedLang);
 
     /* =====================
-       2️⃣ INSTRUCTION LANGUE
+       2️⃣ DÉTECTION LANGUE SIMPLE
     ===================== */
-    const languageInstruction = `
-Tu réponds dans la langue détectée du client.
-Langue détectée : ${detectedLang}.
-Si ce n’est pas le français, réponds STRICTEMENT dans cette langue.
-`;
+    const isEnglish = /^[\x00-\x7F]*$/.test(userText) && /[a-zA-Z]/.test(userText);
+    const detectedLang = isEnglish ? 'en' : 'fr';
+
+    console.log('🌍 Langue détectée:', detectedLang);
+
+    const languageInstruction = detectedLang === 'en'
+      ? 'The user is speaking English. Answer strictly in English.'
+      : 'Le client parle français. Réponds en français.';
 
     /* =====================
        3️⃣ CHAT COMPLETION
@@ -227,10 +223,11 @@ Si ce n’est pas le français, réponds STRICTEMENT dans cette langue.
 
     let chat = await chatRes.json();
 
-    // 🔒 Lecture sécurisée
     let reply =
       chat?.output?.[0]?.content?.[0]?.text ||
-      'Je n’ai pas bien compris. Pourriez-vous répéter ?';
+      (detectedLang === 'en'
+        ? 'I did not quite understand. Could you please repeat?'
+        : 'Je n’ai pas bien compris. Pourriez-vous répéter ?');
 
     /* =====================
        4️⃣ RECHERCHE INTERNET
