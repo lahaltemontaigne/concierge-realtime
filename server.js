@@ -135,10 +135,7 @@ COMPORTEMENT VOCAL
    SERPAPI
 ========================= */
 async function googleSearch(query) {
-  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(
-    query
-  )}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
-
+  const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
   const res = await fetch(url);
   const data = await res.json();
 
@@ -149,29 +146,37 @@ async function googleSearch(query) {
   return null;
 }
 
-/* =========================
-   DÉTECTION STRICTE BESOIN WEB
-========================= */
-function shouldSearchInternet(userText) {
+function needsSearch(userText, reply) {
+  // intention factuelle externe claire
   const externalIntent =
-    /(horaires?|ouvert|fermé|opening hours|phone|telephone|numéro|adresse|menu|prix|tarif|réservation)/i;
+    /(horaires?|ouvert|fermé|opening hours|phone|telephone|numéro|adresse|menu|prix|tarif)/i;
 
-  const internalHotelInfo =
+  // infos que le concierge connaît DÉJÀ (prompt)
+  const internalKnowledge =
     /(halte montaigne|petit[- ]déjeuner|wifi|check[- ]?in|check[- ]?out|réception|brigitte|franck|pelleport)/i;
 
-  // Recherche UNIQUEMENT si :
-  return (
-    externalIntent.test(userText) &&
-    !internalHotelInfo.test(userText)
-  );
+  // si ce n’est pas clairement externe → PAS de recherche
+  if (!externalIntent.test(userText)) return false;
+
+  // si c’est interne → PAS de recherche
+  if (internalKnowledge.test(userText)) return false;
+
+  // si le modèle n’a PAS dit explicitement qu’il manque l’info → PAS de recherche
+  const modelIsMissingInfo =
+    /je n'ai pas cette information|je ne dispose pas de cette information/i.test(reply);
+
+  return modelIsMissingInfo;
 }
+
 
 /* =========================
    TALK
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    /* 1️⃣ TRANSCRIPTION */
+    /* =====================
+       1️⃣ TRANSCRIPTION
+    ===================== */
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
@@ -190,15 +195,33 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const transcript = await transcriptRes.json();
-    const userText = transcript.text;
+
+    const userText = transcript.text?.trim();
 
     if (!userText) {
       console.error('❌ Transcription vide', transcript);
-      return res.status(400).send('Transcription vide');
+      return res.status(400).send('Audio non compris');
     }
 
-    /* 2️⃣ PREMIÈRE RÉPONSE (TOUJOURS) */
-    const messages = [
+    console.log('🗣️ Texte:', userText);
+
+    /* =====================
+       2️⃣ DÉTECTION LANGUE SIMPLE
+    ===================== */
+    const isEnglish = /^[\x00-\x7F]*$/.test(userText) && /[a-zA-Z]/.test(userText);
+    const detectedLang = isEnglish ? 'en' : 'fr';
+
+    console.log('🌍 Langue détectée:', detectedLang);
+
+    const languageInstruction = detectedLang === 'en'
+      ? 'The user is speaking English. Answer strictly in English.'
+      : 'Le client parle français. Réponds en français.';
+
+    /* =====================
+       3️⃣ CHAT COMPLETION
+    ===================== */
+    let messages = [
+      { role: 'system', content: languageInstruction },
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
     ];
@@ -216,12 +239,18 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     });
 
     let chat = await chatRes.json();
-    let reply = chat.output[0].content[0].text;
 
-    /* 3️⃣ RECHERCHE INTERNET — UNIQUEMENT SI STRICTEMENT NÉCESSAIRE */
-    if (shouldSearchInternet(userText)) {
+    let reply =
+      chat?.output?.[0]?.content?.[0]?.text ||
+      (detectedLang === 'en'
+        ? 'I did not quite understand. Could you please repeat?'
+        : 'Je n’ai pas bien compris. Pourriez-vous répéter ?');
+
+    /* =====================
+       4️⃣ RECHERCHE INTERNET
+    ===================== */
+    if (needsSearch(userText, reply)) {
       const webInfo = await googleSearch(userText);
-
       if (webInfo) {
         messages.push({
           role: 'system',
@@ -241,11 +270,14 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
         });
 
         chat = await chatRes.json();
-        reply = chat.output[0].content[0].text;
+        reply =
+          chat?.output?.[0]?.content?.[0]?.text || reply;
       }
     }
 
-    /* 4️⃣ TTS */
+    /* =====================
+       5️⃣ TTS
+    ===================== */
     const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
@@ -263,12 +295,10 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     res.setHeader('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
 
-  } catch (err) {
-    console.error(err);
+  } catch (e) {
+    console.error('🔥 ERREUR SERVEUR:', e);
     res.status(500).send('Erreur serveur');
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Server running on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Server running on ${PORT}`));
