@@ -129,6 +129,8 @@ COMPORTEMENT VOCAL
 
 
 
+
+
 `;
 
 /* =========================
@@ -157,10 +159,13 @@ function needsSearch(userText, reply) {
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    // 1️⃣ TRANSCRIPTION
+    /* =====================
+       1️⃣ TRANSCRIPTION + LANGUE
+    ===================== */
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
+    form.append('response_format', 'verbose_json');
 
     const transcriptRes = await fetch(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -176,9 +181,25 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
 
     const transcript = await transcriptRes.json();
     const userText = transcript.text;
+    const detectedLang = transcript.language || 'fr';
 
-    // 2️⃣ PREMIÈRE RÉPONSE
+    console.log('🗣️ Texte:', userText);
+    console.log('🌍 Langue détectée:', detectedLang);
+
+    /* =====================
+       2️⃣ MESSAGE LANGUE (AJOUT)
+    ===================== */
+    const languageInstruction = `
+Tu réponds toujours dans la langue détectée du client.
+Langue détectée : ${detectedLang}
+Si cette langue n’est pas le français, réponds STRICTEMENT dans cette langue.
+`;
+
+    /* =====================
+       3️⃣ PREMIÈRE RÉPONSE
+    ===================== */
     let messages = [
+      { role: 'system', content: languageInstruction },
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
     ];
@@ -195,7 +216,9 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     let chat = await chatRes.json();
     let reply = chat.output[0].content[0].text;
 
-    // 3️⃣ RECHERCHE INTERNET SI NÉCESSAIRE
+    /* =====================
+       4️⃣ RECHERCHE INTERNET
+    ===================== */
     if (needsSearch(userText, reply)) {
       const webInfo = await googleSearch(userText);
       if (webInfo) {
@@ -218,7 +241,9 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       }
     }
 
-    // 4️⃣ TTS
+    /* =====================
+       5️⃣ TTS
+    ===================== */
     const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
