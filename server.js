@@ -147,21 +147,27 @@ async function googleSearch(query) {
 }
 
 function needsSearch(userText, reply) {
-  // intention factuelle externe claire
-  const externalIntent =
-    /(horaires?|ouvert|fermé|opening hours|phone|telephone|numéro|adresse|menu|prix|tarif)/i;
+  const text = userText.toLowerCase();
 
-  // infos que le concierge connaît DÉJÀ (prompt)
+  // 🔴 Cas où la recherche externe est TOUJOURS nécessaire
+  const alwaysExternal =
+    /(météo|meteo|weather|température|pluie|soleil|prévision)/i;
+
+  if (alwaysExternal.test(text)) return true;
+
+  // 🟠 Cas potentiellement externes
+  const conditionalExternal =
+    /(horaires?|ouvert|fermé|opening hours|téléphone|telephone|numéro|adresse|menu|prix|tarif)/i;
+
+  if (!conditionalExternal.test(text)) return false;
+
+  // 🟢 Infos connues du concierge (prompt)
   const internalKnowledge =
     /(halte montaigne|petit[- ]déjeuner|wifi|check[- ]?in|check[- ]?out|réception|brigitte|franck|pelleport)/i;
 
-  // si ce n’est pas clairement externe → PAS de recherche
-  if (!externalIntent.test(userText)) return false;
+  if (internalKnowledge.test(text)) return false;
 
-  // si c’est interne → PAS de recherche
-  if (internalKnowledge.test(userText)) return false;
-
-  // si le modèle n’a PAS dit explicitement qu’il manque l’info → PAS de recherche
+  // 🔍 Le modèle dit clairement qu’il ne sait pas
   const modelIsMissingInfo =
     /je n'ai pas cette information|je ne dispose pas de cette information/i.test(reply);
 
