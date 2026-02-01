@@ -129,8 +129,6 @@ COMPORTEMENT VOCAL
 
 
 
-
-
 `;
 
 /* =========================
@@ -160,7 +158,7 @@ function needsSearch(userText, reply) {
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
     /* =====================
-       1️⃣ TRANSCRIPTION + LANGUE
+       1️⃣ TRANSCRIPTION
     ===================== */
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
@@ -180,23 +178,34 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const transcript = await transcriptRes.json();
-    const userText = transcript.text;
+
+    // 🔒 Reconstruction robuste du texte
+    let userText = transcript.text;
+    if (!userText && Array.isArray(transcript.segments)) {
+      userText = transcript.segments.map(s => s.text).join(' ').trim();
+    }
+
+    if (!userText) {
+      console.error('❌ Transcription vide', transcript);
+      return res.status(400).send('Audio non compris');
+    }
+
     const detectedLang = transcript.language || 'fr';
 
     console.log('🗣️ Texte:', userText);
     console.log('🌍 Langue détectée:', detectedLang);
 
     /* =====================
-       2️⃣ MESSAGE LANGUE (AJOUT)
+       2️⃣ INSTRUCTION LANGUE
     ===================== */
     const languageInstruction = `
-Tu réponds toujours dans la langue détectée du client.
-Langue détectée : ${detectedLang}
-Si cette langue n’est pas le français, réponds STRICTEMENT dans cette langue.
+Tu réponds dans la langue détectée du client.
+Langue détectée : ${detectedLang}.
+Si ce n’est pas le français, réponds STRICTEMENT dans cette langue.
 `;
 
     /* =====================
-       3️⃣ PREMIÈRE RÉPONSE
+       3️⃣ CHAT COMPLETION
     ===================== */
     let messages = [
       { role: 'system', content: languageInstruction },
@@ -210,11 +219,18 @@ Si cette langue n’est pas le français, réponds STRICTEMENT dans cette langue
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ model: 'gpt-4o-mini', input: messages })
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        input: messages
+      })
     });
 
     let chat = await chatRes.json();
-    let reply = chat.output[0].content[0].text;
+
+    // 🔒 Lecture sécurisée
+    let reply =
+      chat?.output?.[0]?.content?.[0]?.text ||
+      'Je n’ai pas bien compris. Pourriez-vous répéter ?';
 
     /* =====================
        4️⃣ RECHERCHE INTERNET
@@ -233,11 +249,15 @@ Si cette langue n’est pas le français, réponds STRICTEMENT dans cette langue
             Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ model: 'gpt-4o-mini', input: messages })
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            input: messages
+          })
         });
 
         chat = await chatRes.json();
-        reply = chat.output[0].content[0].text;
+        reply =
+          chat?.output?.[0]?.content?.[0]?.text || reply;
       }
     }
 
@@ -262,7 +282,7 @@ Si cette langue n’est pas le français, réponds STRICTEMENT dans cette langue
     res.send(audioBuffer);
 
   } catch (e) {
-    console.error(e);
+    console.error('🔥 ERREUR SERVEUR:', e);
     res.status(500).send('Erreur serveur');
   }
 });
