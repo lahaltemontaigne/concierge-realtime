@@ -111,21 +111,10 @@ PROCÉDURES
 - Question personnelle ou insultante → « Je ne préfère pas répondre à cette question. Avez-vous d’autres questions ? »
 
 
-
 `;
 
 /* =========================
-   DÉTECTION BESOIN WEB (CORRIGÉE)
-========================= */
-function needsWebSearch(text) {
-  const externalIntent =
-    /(horaires|ouvert|ferm[eé]|aujourd’hui|demain|météo|temps|température|adresse|téléphone|numéro|prix|menu)/i;
-
-  return externalIntent.test(text);
-}
-
-/* =========================
-   SERP API
+   SERPAPI
 ========================= */
 async function googleSearch(query) {
   const url = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&hl=fr&gl=fr&api_key=${process.env.SERP_API_KEY}`;
@@ -139,16 +128,24 @@ async function googleSearch(query) {
   return null;
 }
 
+function needsSearch(userText, reply) {
+  const keywords = /(horaires|ouvert|fermé|téléphone|numéro|réservation|adresse|prix|menu)/i;
+  const hasFacts = /\d/.test(reply);
+  return keywords.test(userText) && !hasFacts;
+}
+
 /* =========================
    TALK
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    /* 1️⃣ TRANSCRIPTION */
+    /* =====================
+       1️⃣ TRANSCRIPTION
+    ===================== */
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
-    form.append('response_format', 'text');
+    form.append('response_format', 'json');
 
     const transcriptRes = await fetch(
       'https://api.openai.com/v1/audio/transcriptions',
@@ -162,27 +159,39 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       }
     );
 
-    const userText = await transcriptRes.text();
-    if (!userText) throw new Error('Transcription vide');
+    const transcript = await transcriptRes.json();
+
+    const userText = transcript.text?.trim();
+
+    if (!userText) {
+      console.error('❌ Transcription vide', transcript);
+      return res.status(400).send('Audio non compris');
+    }
 
     console.log('🗣️ Texte:', userText);
 
-    /* 2️⃣ CONTEXTE WEB (UNIQUEMENT SI NÉCESSAIRE) */
-    let webContext = '';
-    if (needsWebSearch(userText)) {
-      const webInfo = await googleSearch(userText);
-      if (webInfo) {
-        webContext = `\n\nINFORMATION FIABLE (internet) : ${webInfo}`;
-      }
-    }
+    /* =====================
+       2️⃣ DÉTECTION LANGUE SIMPLE
+    ===================== */
+    const isEnglish = /^[\x00-\x7F]*$/.test(userText) && /[a-zA-Z]/.test(userText);
+    const detectedLang = isEnglish ? 'en' : 'fr';
 
-    /* 3️⃣ RÉPONSE */
-    const messages = [
-      { role: 'system', content: SYSTEM_PROMPT + webContext },
+    console.log('🌍 Langue détectée:', detectedLang);
+
+    const languageInstruction = detectedLang === 'en'
+      ? 'The user is speaking English. Answer strictly in English.'
+      : 'Le client parle français. Réponds en français.';
+
+    /* =====================
+       3️⃣ CHAT COMPLETION
+    ===================== */
+    let messages = [
+      { role: 'system', content: languageInstruction },
+      { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
     ];
 
-    const chatRes = await fetch('https://api.openai.com/v1/responses', {
+    let chatRes = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -194,10 +203,46 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       })
     });
 
-    const chat = await chatRes.json();
-    const reply = chat.output_text;
+    let chat = await chatRes.json();
 
-    /* 4️⃣ TTS */
+    let reply =
+      chat?.output?.[0]?.content?.[0]?.text ||
+      (detectedLang === 'en'
+        ? 'I did not quite understand. Could you please repeat?'
+        : 'Je n’ai pas bien compris. Pourriez-vous répéter ?');
+
+    /* =====================
+       4️⃣ RECHERCHE INTERNET
+    ===================== */
+    if (needsSearch(userText, reply)) {
+      const webInfo = await googleSearch(userText);
+      if (webInfo) {
+        messages.push({
+          role: 'system',
+          content: `Information fiable trouvée sur internet : ${webInfo}`
+        });
+
+        chatRes = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            input: messages
+          })
+        });
+
+        chat = await chatRes.json();
+        reply =
+          chat?.output?.[0]?.content?.[0]?.text || reply;
+      }
+    }
+
+    /* =====================
+       5️⃣ TTS
+    ===================== */
     const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
@@ -216,7 +261,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     res.send(audioBuffer);
 
   } catch (e) {
-    console.error('❌ Erreur:', e);
+    console.error('🔥 ERREUR SERVEUR:', e);
     res.status(500).send('Erreur serveur');
   }
 });
