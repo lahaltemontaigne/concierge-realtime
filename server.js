@@ -129,7 +129,7 @@ async function googleSearch(query) {
 }
 
 function needsSearch(userText, reply) {
-  const keywords = /(horaires|ouvert|fermé|téléphone|numéro|réservation|adresse|prix|menu)/i;
+  const keywords = /(météo|horaires|ouvert|fermé|téléphone|numéro|réservation|adresse|prix|menu)/i;
   const hasFacts = /\d/.test(reply);
   return keywords.test(userText) && !hasFacts;
 }
