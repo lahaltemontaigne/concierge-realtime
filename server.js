@@ -128,12 +128,10 @@ async function googleSearch(query) {
   return null;
 }
 
-/* =========================
-   DÉCLENCHEMENT WEB (SIMPLE & FIABLE)
-========================= */
-function needsSearch(userText) {
-  const triggers = /(météo|weather|horaires?|ouvert|ferm[ée]|aujourd’hui|téléphone|numéro|appeler|adresse|prix|menu|restaurant|restaurants|musée|musées|vignoble|vignobles)/i;
-  return triggers.test(userText);
+function needsSearch(userText, reply) {
+  const keywords = /(horaires|ouvert|fermé|téléphone|numéro|réservation|adresse|prix|menu)/i;
+  const hasFacts = /\d/.test(reply);
+  return keywords.test(userText) && !hasFacts;
 }
 
 /* =========================
@@ -141,7 +139,9 @@ function needsSearch(userText) {
 ========================= */
 app.post('/talk', upload.single('audio'), async (req, res) => {
   try {
-    /* 1️⃣ TRANSCRIPTION */
+    /* =====================
+       1️⃣ TRANSCRIPTION
+    ===================== */
     const form = new FormData();
     form.append('file', req.file.buffer, { filename: 'audio.webm' });
     form.append('model', 'gpt-4o-mini-transcribe');
@@ -160,6 +160,7 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
     );
 
     const transcript = await transcriptRes.json();
+
     const userText = transcript.text?.trim();
 
     if (!userText) {
@@ -169,26 +170,28 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
 
     console.log('🗣️ Texte:', userText);
 
-    /* 2️⃣ MESSAGES */
+    /* =====================
+       2️⃣ DÉTECTION LANGUE SIMPLE
+    ===================== */
+    const isEnglish = /^[\x00-\x7F]*$/.test(userText) && /[a-zA-Z]/.test(userText);
+    const detectedLang = isEnglish ? 'en' : 'fr';
+
+    console.log('🌍 Langue détectée:', detectedLang);
+
+    const languageInstruction = detectedLang === 'en'
+      ? 'The user is speaking English. Answer strictly in English.'
+      : 'Le client parle français. Réponds en français.';
+
+    /* =====================
+       3️⃣ CHAT COMPLETION
+    ===================== */
     let messages = [
+      { role: 'system', content: languageInstruction },
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
     ];
 
-    /* 3️⃣ RECHERCHE WEB AVANT RÉPONSE */
-    if (needsSearch(userText)) {
-      console.log('🌍 Recherche web déclenchée');
-      const webInfo = await googleSearch(userText);
-      if (webInfo) {
-        messages.push({
-          role: 'system',
-          content: `Information fiable trouvée sur internet : ${webInfo}`
-        });
-      }
-    }
-
-    /* 4️⃣ RÉPONSE FINALE */
-    const chatRes = await fetch('https://api.openai.com/v1/responses', {
+    let chatRes = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -200,12 +203,46 @@ app.post('/talk', upload.single('audio'), async (req, res) => {
       })
     });
 
-    const chat = await chatRes.json();
-    const reply =
-      chat?.output?.[0]?.content?.[0]?.text ||
-      'Je n’ai pas bien compris. Pourriez-vous répéter ?';
+    let chat = await chatRes.json();
 
-    /* 5️⃣ TTS */
+    let reply =
+      chat?.output?.[0]?.content?.[0]?.text ||
+      (detectedLang === 'en'
+        ? 'I did not quite understand. Could you please repeat?'
+        : 'Je n’ai pas bien compris. Pourriez-vous répéter ?');
+
+    /* =====================
+       4️⃣ RECHERCHE INTERNET
+    ===================== */
+    if (needsSearch(userText, reply)) {
+      const webInfo = await googleSearch(userText);
+      if (webInfo) {
+        messages.push({
+          role: 'system',
+          content: `Information fiable trouvée sur internet : ${webInfo}`
+        });
+
+        chatRes = await fetch('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            input: messages
+          })
+        });
+
+        chat = await chatRes.json();
+        reply =
+          chat?.output?.[0]?.content?.[0]?.text || reply;
+      }
+    }
+
+    /* =====================
+       5️⃣ TTS
+    ===================== */
     const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: {
